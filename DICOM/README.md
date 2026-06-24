@@ -11,10 +11,21 @@
 * 本番診療影響を即時停止できる監視体制
 * C-STORE負荷、C-FIND件数、ストレージ使用量の上限設定
 
-## DICOM概要
+## 1. DICOM概要
 DICOM(Digital Imaging and Communications in Medicine)は、医用画像と関連情報を扱うための標準規格である。  
 CT、MRI、X線、超音波、内視鏡、放射線治療計画装置、PACS、読影端末、RIS、HIS、電子カルテ連携などで使われる。
 
 DICOMは、大きく分けて以下の2つを含む。
 | 領域 | 内容 |
-| ---- | ---- |
+| - | - |
+| ファイル形式 | 医用画像、患者情報、検査情報、装置情報、UID、メタデータを含むファイル形式 |
+| ネットワーク通信 | PACSやモダリティ間での画像送信、検索、取得、保存を行うプロトコル |
+
+DICOM通信では、通信主体をApplication Entity(AE)と呼ぶ。各AEは`AE Title`という識別子を持つ。
+| 機器 | AE Title例 |
+| - | - |
+| CT装置 | `CT01` |
+| MRI装置 | `MRI01` |
+| PACS | `PACS01` |
+| 読影端末 | `VIEWER01` |
+
