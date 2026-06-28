@@ -181,3 +181,20 @@ DICOMの匿名化は困難である。
 `PatientName`や`PatientID`を消しただけでは不十分である。DICOMには多数のタグがあり、Private Tagや自由記述欄に個人情報が残ることがある。
 
 匿名化不備が起きやすい箇所は以下の通り。
+| 領域 | 問題 |
+| - | - |
+| Patient系タグ | 氏名、ID、生年月日、性別 |
+| Study系タグ | 検査日、検査説明、依頼医 |
+| Institution系タグ | 病院名、部門名 |
+| Physician系タグ | 医師名、紹介医名 |
+| Device系タグ | 装置名、Station Name |
+| Private Tag | ベンダ独自情報 |
+| Pixel Data | 画像内焼き込み文字 |
+| Structured Report | レポート本文 |
+| PDF Encapsulation | 添付文書内の個人情報 |
+| UID | 再識別可能性 |
+
+特にPrivate Tagはベンダ固有情報を含むことがあり、一般的な匿名化処理から漏れやすい。  
+匿名化を行う場合は、DICOMのBasic Application Confidentiality Profile等の考え方に沿い、タグ削除、UID再生成、日付シフト、Private Tag処理、Burned-in Annotation確認、Pixel Data検査まで含める必要がある。
+
+### AE Title spoofing
