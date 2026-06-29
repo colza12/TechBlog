@@ -198,3 +198,33 @@ DICOMの匿名化は困難である。
 匿名化を行う場合は、DICOMのBasic Application Confidentiality Profile等の考え方に沿い、タグ削除、UID再生成、日付シフト、Private Tag処理、Burned-in Annotation確認、Pixel Data検査まで含める必要がある。
 
 ### AE Title spoofing
+AE TitleはDICOM通信上の識別子であり、最大16文字の文字列である。  
+ただし、単なるIDであって、単独では認証情報ではないことに注意が必要である。
+
+悪い例：
+```
+Allowed AE Title: CT_ROOM_01
+Allowed IP: 192.168.10.20
+```
+この設計では、攻撃者が同一ネットワーク内で送信元IPやAE Titleの制御が可能な状況にある場合、`CT_ROOM_01`と名乗るだけでPACSがAssociationを受け入れる可能性がある。
+
+さらに悪いケースでは、AE Titleから以下の情報を容易に推測できる。
+* 装置ラベル
+* 設定資料
+* 過去のDICOMファイル
+* DICOM通信の平文キャプチャ
+* PACSログ
+* `StationName`
+* モダリティ命名規則
+
+対策としては、以下を組み合わせて対応づける必要がある。
+* AE Title
+* 送信元IP制限
+* ネットワークセグメント
+* DICOM TLS
+* クライアント証明書
+* 装置台帳
+* PACS側の詳細ログ
+* 不審なAssociationの検知
+
+### storage abuse
