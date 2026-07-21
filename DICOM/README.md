@@ -11,6 +11,25 @@
 * 本番診療影響を即時停止できる監視体制
 * C-STORE負荷、C-FIND件数、ストレージ使用量の上限設定
 
+<details>
+  <summary><h3>目次</h3></summary>
+
+* [1. DOCIOM概要](#1-dicom概要)
+* [2. PACS概要](#2-pacs概要)
+* [3. DICOM通信の基本と主要操作](#3-dicom通信の基本と主要操作)
+  * [C-ECHO](#c-echo)
+  * [C-STORE](#c-store)
+  * [C-FIND](#c-find)
+* [4. DICOMのリスク](#dicomのリスク)
+  * [平文通信の危険性](#平文通信の危険性)
+  * [Metadata leakage](#metadata-leakage)
+  * [匿名化不備](#匿名化不備)
+  * [AE Title spoofing](#ae-title-spoofing)
+  * [storage abuse](#storage-abuse)
+  * [Malicious DICOM](#malicious-dicom)
+  * [Parser attack](#parser-attack)
+</details>
+
 ## 1. DICOM概要
 DICOM(Digital Imaging and Communications in Medicine)は、医用画像と関連情報を扱うための標準規格である。  
 CT、MRI、X線、超音波、内視鏡、放射線治療計画装置、PACS、読影端末、RIS、HIS、電子カルテ連携などで使われる。
@@ -313,3 +332,17 @@ DICOM parser attackでは、DICOMを解釈する実装の不備を狙う。
 | XML/JSON変換不備 | 連携システムへの注入 |
 
 防御側は、DICOMを単なる「信頼済み医療データ」と見なすのではなく、外部入力として扱う必要がある。
+
+## 5. POC
+### 1
+### 2
+### 3 
+### 4
+### 5
+### 6
+### 7
+
+## 6. 医療安全(patient safety, medical safety)への影響
+## 7. 防御
+## 8. mitigation
+## 9. local lab
