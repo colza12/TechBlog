@@ -411,6 +411,20 @@ DICOMポートは以下の通り。
 127.0.0.1:4242
 ```
 
+**ログ確認**  
+```bash
+docker logs -f dicom-lab-orthanc
+```
+平文DICOMの観察例。
+```bash
+sudo tcpdump -i lo -s 0 -A 'tcp port 4242'
+```
+
+**後片付け**
+```bash
+docker compose down -v
+```
+
 検証用に認証やDICOM TLSを無効化している。本番環境では、有効にすること。
 
 ### 検証用DICOMファイル
@@ -530,6 +544,11 @@ if __name__ == "__main__":
     main()
 ```
 
+**観察ポイント**
+* `Called AE Title`が正しいと接続できる
+* `Calling AE Title`は任意に変えられる
+* ログに送信元AEがどう残るか確認できる
+
 ### C-STORE
 `C-STORE`により、作成したDICOMをPACSへ送信する。PACSに保存されたDICOMはWeb UIから確認できる。
 ```bash
@@ -576,6 +595,12 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+**観察ポイント**
+* 未登録AEから保存できてしまうか
+* ログにC-STOREが残るか
+* Study/Seriesが作成されるか
+* Web UI上で偽データが見えるか
+* 大量投入を防ぐQuotaがあるか
 
 ### 1. メタデータ検査
 DICOMファイルに含まれるメタデータを確認する。
@@ -683,6 +708,15 @@ if __name__ == "__main__":
     main()
 ```
 
+**観察ポイント**
+* `PatientName`
+* `PatientID`
+* `StudyDate`
+* `AccessionNumber`
+* `StudyDescription`
+* `InstitutionName`
+* `ReferringPhysicianName`
+  
 ### 3. 匿名化不備
 匿名化の不十分なメタデータを推測する。
 ```bash
@@ -779,9 +813,10 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+AE Titleだけでなく、送信元IP、証明書、装置台帳、ネットワークセグメントを組み合わせて制御する必要がある。
 
 ### 5. storage abuseのPoC
-DICOMを連続送信し、PACSが受信・保存する挙動を確認する。
+DICOMを連続送信し、PACSが受信・保存する挙動を確認する。破壊的負荷にならないよう、サイズ・送信数を小さくしている。
 ```bash
 python scripts/storage_abuse_lab.py --count 20
 ```
@@ -793,11 +828,7 @@ from datetime import datetime
 import numpy as np
 import pydicom
 from pydicom.dataset import Dataset, FileDataset
-from pydicom.uid import (
-    ExplicitVRLittleEndian,
-    SecondaryCaptureImageStorage,
-    generate_uid,
-)
+from pydicom.uid import ExplicitVRLittleEndian, SecondaryCaptureImageStorage, generate_uid
 from pynetdicom import AE
 from pynetdicom.sop_class import SecondaryCaptureImageStorage as SC_STORAGE
 
@@ -991,6 +1022,566 @@ if __name__ == "__main__":
 ```
 
 ## 6. 医療安全(patient safety, medical safety)への影響
-## 7. 防御
+### Availability impact
+PACSやDICOMルータの可用性低下は以下のような影響に繋がる。
+* 新規撮影画像がPACSに保存できない
+* 読影医が画像を開けない
+* 救急患者のCT確認が遅れる
+* 術前画像が参照できない
+* 過去画像比較ができない
+* モダリティ側に未送信キューが滞留する
+* 外部紹介用メディア作成が止まる
+* 放射線部門の受付・撮影・読影・報告フローが分断される
+
+### Patient safety
+DICOM/PACSに関する攻撃は、患者安全に以下の形で影響する。  
+医療サイバーセキュリティでは、完全性と可用性を臨床影響として評価する必要がある。
+* 診断遅延
+* 読影遅延
+* 誤患者への画像紐付け
+* 偽Study混入
+* 過去画像比較の失敗
+* 治療方針決定の遅延
+* 緊急手術判断の遅延
+* 画像誘導治療への影響
+* 患者情報漏洩・プライバシー侵害
+
+攻撃者が画像そのものを改ざんしなくても、検査一覧、Study Description、Patient ID、Accession Number、検査日時が混乱するだけで、臨床ワークフローは大きく乱れる。
+
+### Clinical workflow
+DICOMは部門間ワークフローに深く組み込まれている。
+
+```
+検査オーダ
+  -> Modality Worklist
+  -> 撮影
+  -> C-STORE
+  -> PACS保存
+  -> 読影
+  -> レポート作成
+  -> 電子カルテ参照
+```
+特にPACS障害時には、技術的復旧だけでなく、代替運用が必要になる。
+* 緊急検査の優先順位付け
+* モダリティローカル保存の運用
+* 手動搬送
+* 一時Viewer
+* 紙・電話による読影連携
+* 復旧後の画像再同期
+* 監査ログとの突合
+
+
+## 7. 攻撃パターンと防御策
+| 攻撃面 | 典型的な問題 | 主な影響 | Mitigation |
+| - | - | - | - |
+| 平文DICOM | 通信内容が見える | PHI漏えい、AE Title漏えい | DICOM TLS、ネットワーク分離 |
+| C-FIND | メタデータ列挙 | 患者情報漏えい | AE/IP/証明書制御、検索制限、監査ログ |
+| C-STORE | 不正DICOM投入 | 偽Study、ストレージ枯渇 | 送信元制限、Quota、Rate limit、検疫 |
+| AE Title spoofing | 文字列だけで信頼 | 不正接続 | mTLS、AE/IP/証明書マッピング |
+| Storage abuse | 大量投入 | PACS停止、バックアップ肥大 | 容量監視、上限、異常検知 |
+| Malicious DICOM | 後段処理を攻撃 | Viewer/PACSクラッシュ | パーサ隔離、Fuzzing、SBOM、更新 |
+| 匿名化不備 | Private TagやPixel Dataに残存 | 再識別 | DICOM匿名化プロファイル、検査ツール |
+| 監査不足 | 攻撃検知不能 | 発見遅延 | Audit log、SIEM連携、アラート |
+
 ## 8. mitigation
-## 9. local lab
+### Segmentation
+DICOM機器ネットワークは、一般端末ネットワーク、ゲストWi-Fi、事務系ネットワーク、インターネット接続系から分離する。
+
+最低限実施すべき制御・設計は以下の通り。
+* PACS VLAN
+* モダリティ VLAN
+* 読影端末 VLAN
+* 管理 VLAN
+* ベンダ保守接続 VLAN
+* DICOMルータまたはゲートウェイ
+* Firewallで送信元・宛先・ポートを最小化
+* DICOMポートを広域に開放しない
+* 不要なC-MOVE/C-GETを遮断
+* 保守VPNからPACS直通を許可しない
+* ベンダ保守回線の監査
+
+DICOMでは、「どのAEが、どのPACSへ、どのサービスを使うか」まで制御する必要がある。
+
+### DICOM TLS
+DICOM通信をTLSで保護できる。
+
+DICOM TLSを利用した推奨設計は以下の通り。
+* DICOM over TLSを有効化
+* サーバ証明書を検証
+* クライアント証明書を必須化
+* AE Title、IP、証明書Subject/SANを対応付ける
+* 証明書失効・更新手順を運用に組み込む
+* TLS非対応レガシー機器はTLSゲートウェイ配下に隔離
+* 平文DICOMを段階的に廃止
+
+認可設計が弱いとDICOM TLSだけでは対応が不十分である。どのAEがどの操作を許されるかは、別途制御する必要がある。
+
+### Audit log
+PACSやDICOMルータでは、最低限以下の項目をログとして取得・保存するべきである。
+
+| ログ項目 | 目的 |
+| - | - |
+| Timestamp | 事後調査・時系列分析 |
+| Source IP | 送信元追跡 |
+| Calling AE Title | AE spoofing検知 |
+| Called AE Title | 誤接続検知 |
+| Operation | C-ECHO、C-FIND、C-STOREなど |
+| SOP Class | 不審なオブジェクト検知 |
+| Patient ID | 影響範囲特定 |
+| StudyInstanceUID | 影響範囲特定 |
+| AccessionNumber | 業務影響分析 |
+| Object size | Storage abuse検知 |
+| Result status | 失敗・拒否・異常検知 |
+| Transfer Syntax | 想定外形式検知 |
+
+アラートとして以下のようなものが考えられる。
+* 未登録AE TitleからAssociation
+* 未登録IPからC-FIND
+* C-FIND件数の急増
+* 深夜帯の大量C-FIND
+* 通常モダリティ以外からC-STORE
+* 1時間あたりのC-STORE容量急増
+* Unknown SOP Class
+* 想定外Transfer Syntax
+* C-STORE失敗率の急増
+* C-MOVE要求先が想定外
+
+ログは取得するだけでなく、PACS障害やインシデント時に臨床影響を追えるようにする必要がある。
+
+### SBOM(Software Bill of Materials)
+DICOM処理系は、複数のライブラリとコーデックに依存している。そのため、医療機器やPACSでは、SBOMが特に重要である。
+
+外部コンポーネント例
+* DICOMライブラリ
+  * DCMTK
+  * GDCM
+  * dcm4che
+  * fo-dicom
+  * pydicom
+*  画像デコーダ
+  * JPEG
+  * JPEG-LS
+  * JPEG 2000
+  * RLE
+* Web Viewer
+  * JavaScriptライブラリ
+  * WebGL関連コンポーネント
+* PDF処理
+* XML/JSON処理
+* OSパッケージ
+* DB
+* Webサーバ
+* コンテナイメージ
+
+SBOMで把握すべき要素
+* PACS本体
+* DICOMライブラリ
+* DICOMweb実装
+* 画像ビューア
+* JPEG/JPEG2000/RLEコーデック
+* DCMTK、GDCM、dcm4che、fo-dicom等の利用有無
+* OpenSSLなどTLSライブラリ
+* Webサーバ
+* DB
+* OSパッケージ
+* コンテナイメージ
+* エージェント
+* サードパーティプラグイン
+* AI解析前処理コンポーネント
+
+各要素において把握すべき項目
+| 項目 | 理由 |
+| - | - |
+| コンポーネント名 | 影響範囲特定 |
+| バージョン | CVE照合 |
+| 依存関係 | 間接リスク把握 |
+| ライセンス | 調達・運用確認 |
+| ビルド情報 | 再現性 |
+| ベンダ修正状況 | パッチ計画 |
+| 使用箇所 | 臨床影響評価 |
+
+SBOM導入の目的は、脆弱性が出たときに、どの医療機器・PACS・ビューア・変換基盤が影響を受けるかを即座に判断することである。
+
+### 入力検証と制限
+PACSやDICOM Gatewayでは、以下の制御を行う。
+* 受け入れるAE Titleを制限
+* 送信元IPを制限
+* 許可するSOP Classを制限
+* 許可するTransfer Syntaxを制限
+* 最大DICOMサイズを制限
+* 最大画像サイズを制限
+* 1 AssociationあたりのC-STORE件数を制限
+* 単位時間あたりのC-FIND回数を制限
+* Private Tag処理を制限
+* 異常な文字列長を拒否
+* 制御文字を正規化
+* Pixel Data処理をサンドボックス化
+* サムネイル生成を隔離
+* 失敗時にPACS全体を巻き込まない
+
+### 匿名化プロセスの強化
+匿名化では以下を行う。
+* DICOM PS3.15に基づくプロファイル選択
+* Patient系タグの削除・置換
+* Physician系タグの削除・置換
+* Institution系タグの削除・置換
+* UIDの再生成または対応表管理
+* Private Tag削除
+* Structured Report確認
+* Encapsulated PDF確認
+* Pixel Data内焼き込み文字確認
+* 匿名化後の再検査
+* サンプル抽出による人手確認
+* 研究データ提供時の再識別リスク評価
+
+匿名化はツールを一度通して終わりではなく、検証可能なプロセスとして扱う。
+
+## 9. 病院レッドチーム演習で確認すべき観点とシナリオ例
+### 技術的観点
+* 未知のAE TitleでAssociationできるか
+* C-ECHOに応答する範囲はどこか
+* C-FINDでどの範囲のメタデータが返るか
+* C-STOREがどの送信元から許可されているか
+* 大量C-STOREを検知できるか
+* 不正メタデータを含むDICOMを拒否できるか
+* Viewerや変換ツールが異常DICOMで停止しないか
+* DICOM通信が平文か
+* DICOM TLSが正しく設定されているか
+* AE Titleと証明書が対応付けられているか
+* C-MOVEの宛先制限があるか
+* PACS管理画面が分離されているか
+
+### 医療安全観点
+* PACS停止時の代替運用があるか
+* 救急検査の優先手順があるか
+* モダリティローカル保存からの復旧手順があるか
+* 読影医への連絡手段があるか
+* 復旧後の画像再送・重複排除手順があるか
+* 影響患者の特定手順があるか
+* インシデント時に診療部門へ通知できるか
+* サイバー演習が臨床現場の混乱を起こさないよう設計されているか
+
+### ログ・検知観点
+* DICOM Associationログが残るか
+* Calling AE Titleが記録されるか
+* Source IPが記録されるか
+* C-FIND条件が記録されるか
+* C-STORE件数が記録されるか
+* 異常なTransfer Syntaxが検知されるか
+* 未知AEからの通信が通知されるか
+* SIEMに転送されるか
+* PACSベンダログを取得できる契約・手順があるか
+
+### シナリオA: DICOMメタデータ列挙
+目的:
+* C-FINDによる情報露出を確認する
+* 患者情報、検査情報、装置情報が過剰に返らないか確認する
+
+成功条件:
+* 未登録AEからC-FINDが拒否される
+* 許可AEでも必要最小限のQuery/Retrieveのみ可能
+* 監査ログに検索条件、件数、送信元が残る
+* SIEMで異常検索が検知される
+
+### シナリオB: AE Title spoofing
+目的:
+* AE Titleのみを信頼していないか確認する
+
+成功条件:
+* 既知AE Titleを名乗っても、未登録IP・未登録証明書なら拒否
+* Calling AE Titleと送信元IPの不一致が検知される
+* ログに拒否理由が残る
+
+### シナリオC: Storage abuse
+目的:
+* C-STOREによる容量圧迫に耐性があるか確認する
+
+安全条件:
+* 合成DICOMのみ使用
+* 事前に容量上限を決める
+* 本番PACSでは実施しない
+* 検証用PACSまたは隔離環境で実施する
+
+成功条件:
+* Quotaにより上限で止まる
+* 異常なC-STORE量が検知される
+* 通常撮影画像の保存に影響しない
+* バックアップ・レプリケーションに波及しない
+
+### シナリオD: Malicious DICOM / Parser robustness
+目的:
+* DICOMパーサ、ビューア、変換基盤が異常データを安全に処理できるか確認する
+
+安全条件:
+* 実患者データを使わない
+* 本番ビューアに投入しない
+* クラッシュしても診療影響がない環境で実施
+* 既知の実攻撃コードではなく、検証用の異常属性・Private Tag・大きめメタデータに留める
+
+成功条件:
+* パーサが異常を検出して拒否する
+* クラッシュしてもサンドボックス内で収束する
+* PACS本体プロセスに影響しない
+* 監査ログに不正オブジェクトとして残る
+
+## 10. まとめ
+DICOMは医療画像の標準であり、医療現場に不可欠な基盤である。一方で、歴史的に閉域網前提で運用されてきたため、以下のようなリスクを抱えやすい。
+* 平文通信
+* AE Title spoofing
+* C-FINDによるmetadata leakage
+* C-STOREによるstorage abuse
+* 匿名化不備
+* malicious DICOM
+* parser attack
+* PACS停止によるavailability impact
+* 診療遅延によるpatient safetyリスク
+* clinical workflowへの波及
+
+これらはすべて、単なる情報セキュリティ上の問題ではなく、医療安全の問題である。
+
+病院においても、企業と同様に基本的なセキュリティ対策を行う必要があり、相対的に攻撃を受けにくくなる等、ある程度は有効である。  
+しかし、日本の医療現場においては、伝統的な医療体制と医療安全の考慮により、システム更新が難しかったり、使用できるソフトウェアに制限があるなど、基本的なセキュリティ対策が難しい場面も少なくない。  
+また、AIを利用した攻撃が台頭しているこの時代において、どれだけ堅牢にしても、ほんの少しの脆弱性を足掛かりに人間には対応できないmachine speedで攻撃を受けることになる。  
+全てを防御するのは現実的ではないため、災害と同様またはそれ以上の危機感を持って、あらゆる被害を想定した攻撃対応訓練(紙カルテ・検査オーダの利用、停電時の対応など)を避難訓練のように行っておくことが何よりも大切である。
+
+## 11. Appendix
+
+`make_suspicious_dicom.py`は、Private Tagと大きめメタデータを含む検証用DICOMを作る。
+
+`safe_dicom_inspector.py`で、以下の項目を検出できる。
+* PHIらしきメタデータ
+* Private Tag
+* Burned-in Annotation
+* 大きな文字列属性
+* 想定外Transfer Syntax
+* メタデータ要素数
+
+この考え方を、PACS、ビューア、AI解析基盤、匿名化ツールの受け入れ検査に広げると、parser attack耐性の確認に使える。
+
+**make_suspicious_dicom.py**
+```python make_suspicious_dicom.py
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import pydicom
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="検証用のSuspicious DICOMを作成します。"
+    )
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--out", default="data/suspicious.dcm")
+    args = parser.parse_args()
+
+    src = Path(args.input)
+    out = Path(args.out)
+
+    if not src.exists():
+        raise SystemExit(f"input not found: {src}")
+
+    ds = pydicom.dcmread(str(src))
+
+    ds.BurnedInAnnotation = "YES"
+    ds.ImageComments = "LAB_ONLY_METADATA_PADDING:" + ("X" * 4096)
+
+    ds.add_new((0x0011, 0x0010), "LO", "LAB_PRIVATE_CREATOR")
+    ds.add_new(
+        (0x0011, 0x1001),
+        "LT",
+        "LAB_ONLY_PRIVATE_TAG_MARKER: this simulates hidden metadata, not exploit code.",
+    )
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    ds.save_as(str(out), write_like_original=False)
+
+    print(f"created: {out}")
+
+
+if __name__ == "__main__":
+    main()
+```
+**safe_dicom_inspecor.py**
+```python safe_dicom_inspector.py
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any, Dict, List
+
+import pydicom
+from pydicom.errors import InvalidDicomError
+
+
+PHI_KEYWORDS = [
+    "PatientName",
+    "PatientID",
+    "PatientBirthDate",
+    "PatientSex",
+    "AccessionNumber",
+    "StudyDate",
+    "StudyTime",
+    "InstitutionName",
+    "ReferringPhysicianName",
+    "StudyDescription",
+    "SeriesDescription",
+    "ProtocolName",
+    "StationName",
+    "DeviceSerialNumber",
+]
+
+
+def safe_text(value: Any, limit: int = 160) -> str:
+    text = str(value)
+
+    if len(text) > limit:
+        return text[:limit] + "...<truncated>"
+
+    return text
+
+
+def value_length(value: Any) -> int | None:
+    if isinstance(value, bytes):
+        return len(value)
+
+    if isinstance(value, str):
+        return len(value)
+
+    try:
+        return len(value)
+    except TypeError:
+        return None
+
+
+def inspect_dicom(
+    path: Path,
+    force: bool,
+    max_file_mb: int,
+    max_text_len: int,
+    max_elements: int,
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "file": str(path),
+        "size_bytes": path.stat().st_size,
+        "flags": [],
+        "phi_like_metadata": [],
+        "private_tags": [],
+        "large_text_elements": [],
+        "summary": {},
+    }
+
+    max_bytes = max_file_mb * 1024 * 1024
+
+    if result["size_bytes"] > max_bytes:
+        result["flags"].append(
+            f"file_size_exceeds_limit: {result['size_bytes']} > {max_bytes}"
+        )
+
+    try:
+        ds = pydicom.dcmread(
+            str(path),
+            stop_before_pixels=True,
+            force=force,
+        )
+    except InvalidDicomError as exc:
+        result["flags"].append(f"invalid_dicom: {exc}")
+        return result
+
+    result["summary"]["SOPClassUID"] = safe_text(getattr(ds, "SOPClassUID", ""))
+    result["summary"]["TransferSyntaxUID"] = safe_text(
+        getattr(getattr(ds, "file_meta", None), "TransferSyntaxUID", "")
+    )
+    result["summary"]["Modality"] = safe_text(getattr(ds, "Modality", ""))
+    result["summary"]["StudyInstanceUID"] = safe_text(
+        getattr(ds, "StudyInstanceUID", "")
+    )
+
+    for keyword in PHI_KEYWORDS:
+        value = getattr(ds, keyword, None)
+
+        if value is not None and str(value) != "":
+            result["phi_like_metadata"].append(
+                {
+                    "keyword": keyword,
+                    "value": safe_text(value),
+                }
+            )
+
+    burned_in = str(getattr(ds, "BurnedInAnnotation", "")).upper()
+
+    if burned_in == "YES":
+        result["flags"].append("burned_in_annotation_yes")
+
+    element_count = 0
+
+    for elem in ds.iterall():
+        element_count += 1
+
+        if element_count > max_elements:
+            result["flags"].append(f"too_many_elements: > {max_elements}")
+            break
+
+        if elem.tag.is_private:
+            result["private_tags"].append(
+                {
+                    "tag": str(elem.tag),
+                    "name": elem.name,
+                    "vr": elem.VR,
+                    "value_preview": safe_text(elem.value),
+                }
+            )
+
+        length = value_length(elem.value)
+
+        if isinstance(elem.value, str) and length is not None and length > max_text_len:
+            result["large_text_elements"].append(
+                {
+                    "tag": str(elem.tag),
+                    "keyword": elem.keyword,
+                    "name": elem.name,
+                    "vr": elem.VR,
+                    "length": length,
+                    "value_preview": safe_text(elem.value),
+                }
+            )
+
+    result["summary"]["metadata_element_count"] = element_count
+    result["summary"]["private_tag_count"] = len(result["private_tags"])
+    result["summary"]["phi_like_metadata_count"] = len(result["phi_like_metadata"])
+
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="DICOMを安全寄りに検査し、PHI残存や異常属性を確認します。"
+    )
+    parser.add_argument("file")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--max-file-mb", type=int, default=32)
+    parser.add_argument("--max-text-len", type=int, default=512)
+    parser.add_argument("--max-elements", type=int, default=5000)
+    args = parser.parse_args()
+
+    path = Path(args.file)
+
+    if not path.exists():
+        raise SystemExit(f"file not found: {path}")
+
+    result = inspect_dicom(
+        path=path,
+        force=args.force,
+        max_file_mb=args.max_file_mb,
+        max_text_len=args.max_text_len,
+        max_elements=args.max_elements,
+    )
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+```
