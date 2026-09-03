@@ -20,7 +20,7 @@
   * [C-ECHO](#c-echo)
   * [C-STORE](#c-store)
   * [C-FIND](#c-find)
-* [4. DICOMのリスク](#dicomのリスク)
+* [4. DICOMのリスク](#4-dicomのリスク)
   * [平文通信の危険性](#平文通信の危険性)
   * [Metadata leakage](#metadata-leakage)
   * [匿名化不備](#匿名化不備)
@@ -28,8 +28,12 @@
   * [storage abuse](#storage-abuse)
   * [Malicious DICOM](#malicious-dicom)
   * [Parser attack](#parser-attack)
-* [5. PoC](#poc)
+* [5. PoC](#5-poc)
   * [検証環境](#検証環境)
+  * [検証用DICOMファイル](#検証用dicomファイル)
+  * [C-ECHO](#c-echo)
+  * [C-STORE](#c-store)
+  * [1. メタデータ検査による平文通信の危険性PoC](#1-メタデータ検査による平文通信の危険性poc)
 </details>
 
 ## 1. DICOM概要
@@ -338,10 +342,243 @@ DICOM parser attackでは、DICOMを解釈する実装の不備を狙う。
 ## 5. PoC
 ### 検証環境
 検証環境では、ローカルホストにサンプルPACSとしてOrthancを起動し、Pythonの`pynetdicom`と`pydicom`を使ってDICOM通信を再現する。
-### 1
-### 2
-### 3 
-### 4
+
+**構成**  
+```
+dicom-lab/
+├── docker-compose.yml
+├── orthanc.json
+├── requirements.txt
+├── scripts/
+│   ├── create_sample_dicom.py
+│   ├── c_echo.py
+│   ├── c_store.py
+│   ├── c_find.py
+│   ├── ae_title_spoof_lab.py
+│   ├── storage_abuse_lab.py
+│   ├── inspect_metadata.py
+│   ├── anonymize_incomplete_demo.py
+│   └── parser_demo.py
+└── data/
+    └── generated/
+```
+DICOM Port: 4242  
+Web UI: 8042
+
+**docker-compose.yaml**
+```yaml docker-compose.yaml
+services:
+  orthanc:
+    image: orthancteam/orthanc:latest
+    container_name: dicom-lab-orthanc
+    ports:
+      - "127.0.0.1:4242:4242"
+      - "127.0.0.1:8042:8042"
+    volumes:
+      - ./orthanc.json:/etc/orthanc/orthanc.json:ro
+      - orthanc-storage:/var/lib/orthanc/db
+    restart: unless-stopped
+
+volumes:
+  orthanc-storage:
+```
+**orthanc.json**
+```json orthanc.json
+{
+  "Name": "DICOM-LAB-ORTHANC",
+  "DicomAet": "ORTHANC",
+  "DicomPort": 4242,
+  "RemoteAccessAllowed": true,
+  "AuthenticationEnabled": false,
+  "DicomTlsEnabled": false,
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "IndexDirectory": "/var/lib/orthanc/db",
+  "DicomModalities": {},
+  "LogExportedResources": true
+}
+```
+
+**起動**
+```bash
+docker compose up -d
+```
+Web UIはローカルホスト限定で以下に公開される。
+```
+http://127.0.0.1:8042
+```
+DICOMポートは以下の通り。
+```
+127.0.0.1:4242
+```
+
+検証用に認証やDICOM TLSを無効化している。本番環境では、有効にすること。
+
+### 検証用DICOMファイル
+```bash
+$ python scripts/create_sample_dicom.py
+```
+```python create_sample_dicom.py
+from pathlib import Path
+from datetime import datetime
+
+import numpy as np
+import pydicom
+from pydicom.dataset import Dataset, FileDataset
+from pydicom.uid import ExplicitVRLittleEndian, generate_uid, SecondaryCaptureImageStorage
+
+
+OUTPUT_DIR = Path("data/generated")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def create_sample_dicom(output_path: Path) -> None:
+    file_meta = Dataset()
+    file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
+    file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    file_meta.ImplementationClassUID = generate_uid()
+
+    ds = FileDataset(
+        str(output_path),
+        {},
+        file_meta=file_meta,
+        preamble=b"\0" * 128,
+    )
+
+    now = datetime.now()
+
+    ds.SpecificCharacterSet = "ISO_IR 100"
+    ds.PatientName = "LAB^PATIENT"
+    ds.PatientID = "LAB-0001"
+    ds.PatientBirthDate = "19700101"
+    ds.PatientSex = "O"
+
+    ds.StudyDate = now.strftime("%Y%m%d")
+    ds.StudyTime = now.strftime("%H%M%S")
+    ds.AccessionNumber = "LAB-ACCESSION-0001"
+    ds.Modality = "OT"
+    ds.StudyDescription = "DICOM LAB SAMPLE"
+    ds.SeriesDescription = "Generated sample"
+    ds.InstitutionName = "DICOM Cybersecurity Lab"
+    ds.ReferringPhysicianName = "LAB^DOCTOR"
+
+    ds.StudyInstanceUID = generate_uid()
+    ds.SeriesInstanceUID = generate_uid()
+    ds.SOPClassUID = SecondaryCaptureImageStorage
+    ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.Rows = 64
+    ds.Columns = 64
+    ds.BitsAllocated = 8
+    ds.BitsStored = 8
+    ds.HighBit = 7
+    ds.PixelRepresentation = 0
+
+    pixel_array = np.zeros((64, 64), dtype=np.uint8)
+    pixel_array[16:48, 16:48] = 180
+    ds.PixelData = pixel_array.tobytes()
+
+    ds.save_as(output_path, write_like_original=False)
+
+
+if __name__ == "__main__":
+    output = OUTPUT_DIR / "sample.dcm"
+    create_sample_dicom(output)
+    print(f"Created: {output}")
+```
+
+### C-ECHO
+`C-ECHO`はDICOMの疎通確認サービスである。DICOMサービスが存在するか、指定したAE Titleを受け付けるかを確認する入口になる。
+
+```bash
+$ python scripts/c_echo.py
+```
+```python c_echo.py
+from pynetdicom import AE
+from pynetdicom.sop_class import Verification
+
+
+PACS_HOST = "127.0.0.1"
+PACS_PORT = 4242
+PACS_AET = "ORTHANC"
+CALLING_AET = "LABCLIENT"
+
+
+def main() -> None:
+    ae = AE(ae_title=CALLING_AET)
+    ae.add_requested_context(Verification)
+
+    assoc = ae.associate(PACS_HOST, PACS_PORT, ae_title=PACS_AET)
+
+    if not assoc.is_established:
+        print("Association failed")
+        return
+
+    status = assoc.send_c_echo()
+
+    if status:
+        print(f"C-ECHO status: 0x{status.Status:04X}")
+    else:
+        print("C-ECHO failed")
+
+    assoc.release()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+### C-STORE
+`C-STORE`により、作成したDICOMをPACSへ送信する。PACSに保存されたDICOMはWeb UIから確認できる。
+```bash
+$ python scripts/c_store.py
+```
+```python c_store.py
+from pathlib import Path
+
+import pydicom
+from pynetdicom import AE
+from pynetdicom.sop_class import SecondaryCaptureImageStorage
+
+
+PACS_HOST = "127.0.0.1"
+PACS_PORT = 4242
+PACS_AET = "ORTHANC"
+CALLING_AET = "LABCLIENT"
+
+DICOM_FILE = Path("data/generated/sample.dcm")
+
+
+def main() -> None:
+    ds = pydicom.dcmread(DICOM_FILE)
+
+    ae = AE(ae_title=CALLING_AET)
+    ae.add_requested_context(SecondaryCaptureImageStorage)
+
+    assoc = ae.associate(PACS_HOST, PACS_PORT, ae_title=PACS_AET)
+
+    if not assoc.is_established:
+        print("Association failed")
+        return
+
+    status = assoc.send_c_store(ds)
+
+    if status:
+        print(f"C-STORE status: 0x{status.Status:04X}")
+    else:
+        print("C-STORE failed")
+
+    assoc.release()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+### 1. メタデータ検査による平文通信の危険性PoC
+
 ### 5
 ### 6
 ### 7
