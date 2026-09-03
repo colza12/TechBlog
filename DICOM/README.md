@@ -28,6 +28,8 @@
   * [storage abuse](#storage-abuse)
   * [Malicious DICOM](#malicious-dicom)
   * [Parser attack](#parser-attack)
+* [5. PoC](#poc)
+  * [検証環境](#検証環境)
 </details>
 
 ## 1. DICOM概要
@@ -333,7 +335,9 @@ DICOM parser attackでは、DICOMを解釈する実装の不備を狙う。
 
 防御側は、DICOMを単なる「信頼済み医療データ」と見なすのではなく、外部入力として扱う必要がある。
 
-## 5. POC
+## 5. PoC
+### 検証環境
+検証環境では、ローカルホストにサンプルPACSとしてOrthancを起動し、Pythonの`pynetdicom`と`pydicom`を使ってDICOM通信を再現する。
 ### 1
 ### 2
 ### 3 
