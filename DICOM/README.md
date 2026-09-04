@@ -375,7 +375,6 @@ DICOM parser attackでは、DICOMを解釈する実装の不備を狙う。
 dicom-lab/
 ├── docker-compose.yml
 ├── orthanc.json
-├── requirements.txt
 ├── scripts/
 │   ├── create_sample_dicom.py
 │   ├── c_echo.py
