@@ -671,6 +671,8 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+![stored dicom](images/stored_dicom.png)
+
 **観察ポイント**
 * 未登録AEから保存できてしまうか
 * ログにC-STOREが残るか
