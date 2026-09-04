@@ -1663,4 +1663,5 @@ if __name__ == "__main__":
 ```
 
 
+> DICOMの説明にSR、GSDF、RDSRを追加
 > c-echo status 追加
