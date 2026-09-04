@@ -1613,3 +1613,6 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
+
+> c-echo status 追加
