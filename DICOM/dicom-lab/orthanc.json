@@ -1,0 +1,12 @@
+{
+  "Name": "DICOM-LAB-ORTHANC",
+  "DicomAet": "ORTHANC",
+  "DicomPort": 4242,
+  "RemoteAccessAllowed": true,
+  "AuthenticationEnabled": false,
+  "DicomTlsEnabled": false,
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "IndexDirectory": "/var/lib/orthanc/db",
+  "DicomModalities": {},
+  "LogExportedResources": true
+}
