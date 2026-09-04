@@ -1,0 +1,14 @@
+services:
+  orthanc:
+    image: orthancteam/orthanc:latest
+    container_name: dicom-lab-orthanc
+    ports:
+      - "127.0.0.1:4242:4242"
+      - "127.0.0.1:8042:8042"
+    volumes:
+      - ./orthanc.json:/etc/orthanc/orthanc.json:ro
+      - orthanc-storage:/var/lib/orthanc/db
+    restart: unless-stopped
+
+volumes:
+  orthanc-storage:
