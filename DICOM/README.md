@@ -721,6 +721,18 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+実行例
+```
+$ python3 scripts/inspect_metadata.py data/generated/sample.dcm
+
+(0008,0050) AccessionNumber: LAB-ACCESSION-0001
+(0008,0080) InstitutionName: DICOM Cybersecurity Lab
+(0008,0090) ReferringPhysicianName: LAB^DOCTOR
+(0010,0010) PatientName: LAB^PATIENT
+(0010,0020) PatientID: LAB-0001
+(0010,0030) PatientBirthDate: 19700101
+(0010,0040) PatientSex: O
+```
 
 ### 2. C-FINDによるmetadata leakage
 `C-FIND`を使ってPACS内の検査情報を検索する。
@@ -764,8 +776,8 @@ def main() -> None:
     )
 
     for status, identifier in responses:
-        if status is None:
-            print("Connection timed out or invalid response")
+        if status is None or "Status" not in status:
+            print("Connection timed out, was aborted or received invalid response")
             continue
 
         print(f"Status: 0x{status.Status:04X}")
