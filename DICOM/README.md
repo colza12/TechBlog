@@ -432,7 +432,7 @@ Web UIはローカルホスト限定で以下に公開される。
 ```
 http://127.0.0.1:8042
 ```
-![Web UI image](image/WebUI.png)
+![Web UI image](images/WebUI.png)
 
 DICOMポートは以下の通り。
 ```
